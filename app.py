@@ -216,14 +216,91 @@ with col1:
 
 if scan_btn and url_input:
     base = get_base(url_input)
-    with st.spinner("Scansione album in corso…"):
-        albums = scrape_albums(base)
+    log_box = st.empty()
+
+    # Test connessione
+    log_box.info("🔌 Test connessione al sito…")
+    test = fetch(base)
+    if test is None:
+        log_box.error("❌ Impossibile raggiungere il sito. Controlla l'URL o riprova.")
+        st.stop()
+
+    log_box.success(f"✅ Sito raggiungibile (HTTP {test.status_code}) — scansione album in corso…")
+    time.sleep(0.4)
+
+    # Scansione pagina per pagina con log live
+    albums = []
+    page = 1
+    prog = st.progress(0, text="Scansione pagina 1…")
+    detail = st.empty()
+
+    while True:
+        url = f"{base}/albums?page={page}"
+        detail.markdown(f"📄 Scansione **pagina {page}** → `{url}`")
+        r = fetch(url)
+
+        if not r:
+            detail.warning(f"⚠️ Pagina {page} non risponde — mi fermo qui.")
+            break
+
+        soup = BeautifulSoup(r.text, "lxml")
+        found_this_page = 0
+
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if re.match(r"^/albums/\d+", href):
+                full_url = urljoin(base, href)
+                if any(al["url"] == full_url for al in albums):
+                    continue
+                name = ""
+                title_el = a.find(class_=re.compile(r"album.*title|title.*album", re.I))
+                if not title_el:
+                    title_el = a.find(["span", "div", "p"])
+                if title_el:
+                    name = title_el.get_text(strip=True)
+                if not name:
+                    name = href.split("/")[-1]
+                cover = ""
+                img = a.find("img")
+                if img:
+                    cover = img.get("src") or img.get("data-src") or ""
+                albums.append({"name": name, "url": full_url, "cover": cover})
+                found_this_page += 1
+
+        log_box.success(f"📦 Pagina {page}: +{found_this_page} album → totale: **{len(albums)}**")
+
+        if found_this_page == 0:
+            detail.info("ℹ️ Nessun nuovo album in questa pagina — scansione terminata.")
+            break
+
+        page_links = soup.find_all("a", href=re.compile(r"page=\d+"))
+        max_page = max(
+            (int(re.search(r"page=(\d+)", a["href"]).group(1)) for a in page_links),
+            default=page
+        )
+        prog.progress(min(page / max(max_page, 1), 1.0), text=f"Pagina {page}/{max_page}")
+
+        if page >= max_page:
+            break
+        page += 1
+        time.sleep(0.3)
+
+    prog.empty()
+    detail.empty()
+
     if albums:
         st.session_state["albums"] = albums
         st.session_state["selected"] = [a["url"] for a in albums]
-        st.success(f"✅ Trovati {len(albums)} album!")
+        log_box.success(f"✅ Scansione completata — **{len(albums)} album** trovati!")
     else:
-        st.error("Nessun album trovato. Il sito potrebbe bloccare lo scraping o la struttura è cambiata.")
+        log_box.error("❌ Nessun album trovato — il sito usa probabilmente JavaScript dinamico.")
+        st.warning("""
+**💡 Cosa significa:** Yupoo carica i contenuti via JavaScript, quindi BeautifulSoup non li vede.
+
+**Soluzioni:**
+- Dimmi e aggiungo il supporto **Selenium / Playwright** (browser headless) che esegue il JS
+- Oppure incolla l'URL di un **singolo album** (es. `https://huskyreps.x.yupoo.com/albums/12345`) per scaricare quello direttamente
+        """)
 
 # ── STEP 2 — Album list ────────────────────────────────────────────────────────
 if st.session_state["albums"]:
